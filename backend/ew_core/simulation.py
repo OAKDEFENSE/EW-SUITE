@@ -12,13 +12,14 @@ and the rest of the pipeline (detector, tracker, classifier, API) is unchanged.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from . import geo
 from .models import Ownship, Position, PulseParams, ReceiverConfig, ScenarioInfo, SpectrumFrame
+from .propagation import PropagationModel
+from .terrain import FlatTerrain, Terrain
 
 MHZ = 1e6
 GHZ = 1e9
@@ -44,7 +45,7 @@ class SimEmitter:
     burst_period_s: float = 10.0
     speed_mps: float = 0.0
     heading_deg: float = 0.0
-    alt_m: float = 10.0
+    alt_m: float = 10.0  # antenna height above ground level
 
     def step(self, dt: float) -> None:
         if self.speed_mps > 0:
@@ -120,12 +121,6 @@ class PulseDescriptor:
     bearing_deg: float
     power_dbm: float
     pulse: PulseParams | None
-
-
-def free_space_path_loss_db(distance_m: float, freq_hz: float) -> float:
-    d_km = max(distance_m / 1000.0, 0.01)
-    f_mhz = freq_hz / 1e6
-    return 20 * math.log10(d_km) + 20 * math.log10(f_mhz) + 32.44
 
 
 def build_scenarios() -> dict[str, Scenario]:
@@ -216,6 +211,16 @@ def build_scenarios() -> dict[str, Scenario]:
                 burst_period_s=12,
             ),
             SimEmitter(
+                id="SIM-VHF-INLAND",
+                name="Inland VHF repeater",
+                lat=55.42,
+                lon=-2.35,
+                freq_hz=68.2 * MHZ,
+                bandwidth_hz=25e3,
+                eirp_dbm=47,
+                alt_m=25,
+            ),
+            SimEmitter(
                 id="SIM-MAR",
                 name="Merchant vessel marine VHF",
                 lat=55.75,
@@ -301,11 +306,15 @@ def build_scenarios() -> dict[str, Scenario]:
 class RfEnvironment:
     """Propagates the scenario and synthesises receiver output each tick."""
 
-    def __init__(self, scenario: Scenario, seed: int | None = None) -> None:
+    def __init__(
+        self, scenario: Scenario, seed: int | None = None, terrain: Terrain | None = None
+    ) -> None:
         self.scenario = scenario
         self.rng = np.random.default_rng(seed)
         self.t = 0.0
         self.bearing_sigma_deg = 2.0
+        self.terrain: Terrain = terrain or FlatTerrain()
+        self.propagation = PropagationModel(self.terrain)
 
     # ------------------------------------------------------------------ state
     def step(self, dt: float) -> None:
@@ -338,12 +347,19 @@ class RfEnvironment:
         for e in self.scenario.emitters:
             if not e.transmitting(self.t):
                 continue
-            dist = geo.distance_m(own.position.lat, own.position.lon, e.lat, e.lon)
-            dist = math.hypot(dist, own.position.alt_m - e.alt_m)
+            loss = self.propagation.path_loss(
+                e.lat,
+                e.lon,
+                self.propagation.msl(e.lat, e.lon, e.alt_m),
+                own.position.lat,
+                own.position.lon,
+                own.position.alt_m,
+                e.freq_hz,
+            )
             brg_to_rx = geo.bearing_deg(e.lat, e.lon, own.position.lat, own.position.lon)
             rx_dbm = (
                 e.eirp_dbm
-                - free_space_path_loss_db(dist, e.freq_hz)
+                - loss.total_db
                 + e.antenna_gain_db(self.t, brg_to_rx)
                 + self.rng.normal(0, 0.8)
             )

@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { AlertFeed } from "./components/AlertFeed";
 import { SpectrumPanel } from "./components/SpectrumPanel";
 import { StatusBar } from "./components/StatusBar";
-import { TacticalMap } from "./components/TacticalMap";
+import { TacticalMap, type RxAltitudeOption } from "./components/TacticalMap";
 import { ThreatBanner } from "./components/ThreatBanner";
 import { TrackDetail } from "./components/TrackDetail";
 import { TrackTable } from "./components/TrackTable";
 import { api } from "./lib/api";
 import { StreamClient, streamUrl } from "./lib/stream";
-import type { ReceiverConfig, ScenarioInfo, SignalLibraryEntry } from "./lib/types";
+import type { CoverageGrid, ReceiverConfig, ScenarioInfo, SignalLibraryEntry } from "./lib/types";
 import { initialState, reducer } from "./state/store";
 
 export function App() {
@@ -16,6 +16,10 @@ export function App() {
   const [library, setLibrary] = useState<SignalLibraryEntry[]>([]);
   const [scenarios, setScenarios] = useState<ScenarioInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [coverageEnabled, setCoverageEnabled] = useState(false);
+  const [rxAltitude, setRxAltitude] = useState<RxAltitudeOption>("ownship");
+  const [coverage, setCoverage] = useState<CoverageGrid | null>(null);
+  const [coverageBusy, setCoverageBusy] = useState(false);
   const clientRef = useRef<StreamClient | null>(null);
 
   useEffect(() => {
@@ -72,6 +76,40 @@ export function App() {
     () => library.find((e) => e.id === selected?.classification.library_id) ?? null,
     [library, selected],
   );
+  const coverageAvailable = !!selected?.geo && selected.est_eirp_dbm !== null;
+
+  // Coverage map for the selected geolocated emitter; refreshed periodically as the fix tightens.
+  const selectedId = selected?.id ?? null;
+  useEffect(() => {
+    if (!coverageEnabled || !selectedId || !coverageAvailable) {
+      setCoverage(null);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      setCoverageBusy(true);
+      const opts =
+        rxAltitude === "ownship"
+          ? {}
+          : { rxAltM: rxAltitude === "agl50" ? 50 : 500, rxAltRef: "agl" as const };
+      api
+        .trackCoverage(selectedId, { ...opts, n: 90, radiusKm: 60 })
+        .then((g) => {
+          if (!cancelled) {
+            setCoverage(g);
+            setError(null);
+          }
+        })
+        .catch((e) => !cancelled && setError(String(e)))
+        .finally(() => !cancelled && setCoverageBusy(false));
+    };
+    load();
+    const timer = window.setInterval(load, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [coverageEnabled, selectedId, coverageAvailable, rxAltitude]);
 
   return (
     <div className="app">
@@ -111,6 +149,13 @@ export function App() {
             tracks={engine?.tracks ?? []}
             selectedTrackId={state.selectedTrackId}
             onSelect={selectTrack}
+            coverage={coverage}
+            coverageEnabled={coverageEnabled}
+            coverageAvailable={coverageAvailable}
+            coverageBusy={coverageBusy}
+            onToggleCoverage={() => setCoverageEnabled((v) => !v)}
+            rxAltitude={rxAltitude}
+            onRxAltitude={setRxAltitude}
           />
         </section>
         <section className="panel panel-tracks">

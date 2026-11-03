@@ -21,6 +21,10 @@ from .models import (
     SignalLibraryEntry,
     TrackStatus,
 )
+from .propagation import PropagationModel
+
+# Antenna height assumed for an emitter whose fix is on the ground; used for the EIRP estimate.
+ASSUMED_EMITTER_AGL_M = 10.0
 
 
 class TrackEventKind(StrEnum):
@@ -53,9 +57,18 @@ class _Track:
     geo: GeoFix | None = None
     threat_alerted: bool = False
     geo_alerted: bool = False
+    est_eirp_dbm: float | None = None
+    los: bool | None = None
+    # Two minutes of bearings at 5 Hz: a long baseline for a moving platform while still
+    # tracking slowly moving emitters.
     bearing_obs: deque[tuple[float, float, float]] = field(
-        default_factory=lambda: deque(maxlen=240)
+        default_factory=lambda: deque(maxlen=600)
     )
+    power_hist: deque[float] = field(default_factory=lambda: deque(maxlen=150))
+
+    @property
+    def peak_power_dbm(self) -> float | None:
+        return max(self.power_hist) if self.power_hist else None
 
     def to_model(self) -> EmitterTrack:
         return EmitterTrack(
@@ -71,6 +84,9 @@ class _Track:
             first_seen=self.first_seen,
             last_seen=self.last_seen,
             geo=self.geo,
+            peak_power_dbm=self.peak_power_dbm,
+            est_eirp_dbm=self.est_eirp_dbm,
+            los=self.los,
         )
 
 
@@ -91,8 +107,14 @@ class Tracker:
         bearing_tol_deg: float = 20.0,
         min_geo_bearings: int = 6,
         min_geo_baseline_m: float = 2500.0,
+        max_geo_error_m: float = 50_000.0,
+        max_geo_error_frac: float = 0.5,
+        propagation: PropagationModel | None = None,
     ) -> None:
         self.library = library
+        self.propagation = propagation
+        self.max_geo_error_m = max_geo_error_m
+        self.max_geo_error_frac = max_geo_error_frac
         self.confirm_hits = confirm_hits
         self.lost_after_s = lost_after_s
         self.drop_after_s = drop_after_s
@@ -183,6 +205,7 @@ class Tracker:
             first_seen=now,
             last_seen=now,
         )
+        tr.power_hist.append(det.power_dbm)
         self._record_bearing(tr, det, ownship, now)
         self._tracks[tr.id] = tr
 
@@ -193,6 +216,7 @@ class Tracker:
         tr.freq_hz += 0.3 * (det.freq_hz - tr.freq_hz)
         tr.bandwidth_hz += 0.3 * (det.bandwidth_hz - tr.bandwidth_hz)
         tr.power_dbm += 0.5 * (det.power_dbm - tr.power_dbm)
+        tr.power_hist.append(det.power_dbm)
         if det.bearing_deg is not None:
             tr.bearing_deg = (
                 det.bearing_deg
@@ -240,10 +264,30 @@ class Tracker:
             events.append(TrackEvent(TrackEventKind.THREAT, tr.to_model()))
 
         self._record_bearing(tr, det, ownship, now)
-        if self._try_geolocate(tr) and not tr.geo_alerted:
-            tr.geo_alerted = True
-            events.append(TrackEvent(TrackEventKind.GEO_FIX, tr.to_model()))
+        if self._try_geolocate(tr):
+            self._estimate_link(tr, ownship)
+            if not tr.geo_alerted:
+                tr.geo_alerted = True
+                events.append(TrackEvent(TrackEventKind.GEO_FIX, tr.to_model()))
         return events
+
+    def _estimate_link(self, tr: _Track, ownship: Ownship) -> None:
+        """Back out the emitter's EIRP from peak received power and the modelled path loss."""
+        if self.propagation is None or tr.geo is None:
+            return
+        fix = tr.geo.position
+        loss = self.propagation.path_loss(
+            fix.lat,
+            fix.lon,
+            self.propagation.msl(fix.lat, fix.lon, ASSUMED_EMITTER_AGL_M),
+            ownship.position.lat,
+            ownship.position.lon,
+            ownship.position.alt_m,
+            tr.freq_hz,
+        )
+        peak = tr.peak_power_dbm
+        tr.est_eirp_dbm = round(peak + loss.total_db, 1) if peak is not None else None
+        tr.los = loss.los
 
     def _record_bearing(self, tr: _Track, det: Detection, ownship: Ownship, now: float) -> None:
         if det.bearing_deg is None:
@@ -257,13 +301,17 @@ class Tracker:
         baseline = geo.distance_m(obs[0][0], obs[0][1], obs[-1][0], obs[-1][1])
         if baseline < self.min_geo_baseline_m:
             return False
-        # Thin to at most 48 observations to keep the solve cheap.
-        step = max(1, math.ceil(len(obs) / 48))
+        # Thin to at most 120 observations to keep the solve cheap.
+        step = max(1, math.ceil(len(obs) / 120))
         result = geo.triangulate(obs[::step])
         if result is None:
             return False
         lat, lon, err = result
-        if err > 50_000:
+        # Publish only fixes that are useful: bounded absolute error, and an error small
+        # relative to the range so a poorly observable (near-radial) geometry waits for
+        # the platform to open up a baseline instead of planting a misleading symbol.
+        range_m = geo.distance_m(obs[-1][0], obs[-1][1], lat, lon)
+        if err > self.max_geo_error_m or err > self.max_geo_error_frac * range_m:
             return False
         tr.geo = GeoFix(
             position=Position(lat=lat, lon=lon, alt_m=0.0),

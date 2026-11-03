@@ -13,4 +13,5 @@ uv run ruff check .
 ```
 
 Environment variables: `EW_SCENARIO` (default `littoral_patrol`), `EW_TICK_HZ` (5),
-`EW_SEED`, `EW_PORT` (8000), `EW_CORS_ORIGINS`.
+`EW_SEED`, `EW_PORT` (8000), `EW_CORS_ORIGINS`, `EW_TERRAIN` (`synthetic`, `flat` or
+`hgt:/path/to/tiles`).

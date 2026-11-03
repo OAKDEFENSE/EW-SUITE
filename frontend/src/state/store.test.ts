@@ -16,6 +16,9 @@ function track(id: string, threat: EmitterTrack["classification"]["threat"], sta
     first_seen: 0,
     last_seen: 1,
     geo: null,
+    peak_power_dbm: null,
+    est_eirp_dbm: null,
+    los: null,
   };
 }
 

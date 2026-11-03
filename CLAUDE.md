@@ -16,6 +16,9 @@ pipeline (simulated receiver → detector → tracker/geolocation/classifier →
 - Keep the pipeline hardware-agnostic: anything that talks to a receiver lives behind the
   `acquire(receiver, time) -> (SpectrumFrame, list[PulseDescriptor])` contract in
   `simulation.py`. Detector, tracker, classifier and API must not know about the simulation.
+- Propagation lives in `propagation.py` on top of a `Terrain` from `terrain.py`; both are
+  vectorised over numpy arrays so coverage grids are computed in one call. Emitter `alt_m`
+  in scenarios is height above ground; ownship altitude is MSL.
 - Signal library entries are notional and unclassified. Do not add real system parameters.
 - Pure logic (geo, detector, tracker, classifier, store reducer, formatters) gets unit tests.
   UI components are exercised via typecheck and build only.

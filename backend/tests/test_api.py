@@ -50,3 +50,38 @@ def test_websocket_stream(client):
         state = ws.receive_json()
         assert state["type"] == "state"
         assert "spectrum" in state["data"]
+
+
+def test_terrain_endpoints(client):
+    info = client.get("/api/terrain").json()
+    assert info["model"] in {"synthetic", "flat", "hgt"}
+    r = client.get("/api/terrain/elevation", params={"lat": 55.48, "lon": -2.15})
+    assert r.status_code == 200 and r.json()["elevation_m"] >= 0
+    r = client.get(
+        "/api/terrain/grid", params={"south": 55, "west": -2.5, "north": 56, "east": 0, "n": 20}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["elevation_m"]) == body["n_lat"]
+    r = client.get(
+        "/api/terrain/grid", params={"south": 56, "west": -2.5, "north": 55, "east": 0, "n": 20}
+    )
+    assert r.status_code == 422
+
+
+def test_coverage_endpoints(client):
+    r = client.post(
+        "/api/coverage",
+        json={
+            "lat": 55.35,
+            "lon": -1.55,
+            "eirp_dbm": 90,
+            "freq_hz": 2.9e9,
+            "n": 12,
+            "radius_km": 20,
+        },
+    )
+    assert r.status_code == 200
+    assert len(r.json()["power_dbm"]) == 12
+    assert client.get("/api/tracks/E-999/coverage").status_code == 404
+    assert client.post("/api/coverage", json={"lat": 55, "lon": -1}).status_code == 422

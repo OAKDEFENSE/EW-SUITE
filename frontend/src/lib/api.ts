@@ -1,4 +1,14 @@
-import type { EngineState, ReceiverConfig, ScenarioInfo, SignalLibraryEntry } from "./types";
+import type {
+  AltitudeRef,
+  CoverageGrid,
+  EngineState,
+  GridBounds,
+  ReceiverConfig,
+  ScenarioInfo,
+  SignalLibraryEntry,
+  TerrainGrid,
+  TerrainInfo,
+} from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -20,4 +30,23 @@ export const api = {
     request<EngineState>(`/api/scenarios/${encodeURIComponent(name)}/load`, { method: "POST" }),
   setReceiver: (update: Partial<ReceiverConfig>) =>
     request<ReceiverConfig>("/api/receiver", { method: "PUT", body: JSON.stringify(update) }),
+  terrain: () => request<TerrainInfo>("/api/terrain"),
+  terrainGrid: (b: GridBounds, n = 120) =>
+    request<TerrainGrid>(
+      `/api/terrain/grid?south=${b.south}&west=${b.west}&north=${b.north}&east=${b.east}&n=${n}`,
+    ),
+  trackCoverage: (
+    trackId: string,
+    opts: { rxAltM?: number; rxAltRef?: AltitudeRef; radiusKm?: number; n?: number } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (opts.rxAltM !== undefined) q.set("rx_alt_m", String(opts.rxAltM));
+    if (opts.rxAltRef) q.set("rx_alt_ref", opts.rxAltRef);
+    if (opts.radiusKm) q.set("radius_km", String(opts.radiusKm));
+    if (opts.n) q.set("n", String(opts.n));
+    const qs = q.toString();
+    return request<CoverageGrid>(
+      `/api/tracks/${encodeURIComponent(trackId)}/coverage${qs ? `?${qs}` : ""}`,
+    );
+  },
 };

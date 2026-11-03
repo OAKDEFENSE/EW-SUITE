@@ -59,6 +59,9 @@ export function TrackDetail({ track, entry, now, ownship }: Props) {
         <Row label="Frequency">{formatFreq(track.freq_hz, 4)}</Row>
         <Row label="Bandwidth">{formatBandwidth(track.bandwidth_hz)}</Row>
         <Row label="Power">{formatDbm(track.power_dbm)}</Row>
+        <Row label="Peak power">
+          {track.peak_power_dbm !== null ? formatDbm(track.peak_power_dbm) : "—"}
+        </Row>
         <Row label="Bearing">{formatBearing(track.bearing_deg)}</Row>
         <Row label="PRI">{track.pulse ? `${formatMicros(track.pulse.pri_us)} µs` : "CW / none"}</Row>
         <Row label="PW">{track.pulse ? `${formatMicros(track.pulse.pw_us)} µs` : "—"}</Row>
@@ -80,6 +83,12 @@ export function TrackDetail({ track, entry, now, ownship }: Props) {
           <Row label="Error radius">{formatDistance(track.geo.error_radius_m)}</Row>
           <Row label="Bearings used">{track.geo.n_bearings}</Row>
           {range !== null && <Row label="Range">{formatDistance(range)}</Row>}
+          <Row label="Est. EIRP">
+            {track.est_eirp_dbm !== null ? `${track.est_eirp_dbm.toFixed(0)} dBm` : "—"}
+          </Row>
+          <Row label="Line of sight">
+            {track.los === null ? "—" : track.los ? "clear" : "terrain-obstructed"}
+          </Row>
         </div>
       ) : (
         <p className="dim">

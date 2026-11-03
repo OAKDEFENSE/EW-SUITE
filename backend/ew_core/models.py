@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -121,6 +122,15 @@ class EmitterTrack(BaseModel):
     first_seen: float
     last_seen: float
     geo: GeoFix | None = None
+    peak_power_dbm: float | None = Field(
+        default=None, description="Highest received power over the recent window"
+    )
+    est_eirp_dbm: float | None = Field(
+        default=None, description="EIRP estimated from peak power and path loss to the fix"
+    )
+    los: bool | None = Field(
+        default=None, description="Whether the geolocated fix is line-of-sight from ownship"
+    )
 
 
 class AlertKind(StrEnum):
@@ -181,3 +191,52 @@ class EngineState(BaseModel):
     spectrum: SpectrumFrame
     tracks: list[EmitterTrack]
     alerts: list[Alert]
+
+
+class TerrainInfo(BaseModel):
+    model: str
+    description: str
+
+
+class GridBounds(BaseModel):
+    south: float
+    west: float
+    north: float
+    east: float
+
+
+class TerrainGrid(BaseModel):
+    """Elevation raster. Rows run north to south, columns west to east."""
+
+    bounds: GridBounds
+    n_lat: int
+    n_lon: int
+    elevation_m: list[list[float]]
+
+
+class CoverageRequest(BaseModel):
+    lat: float
+    lon: float
+    alt_agl_m: float = Field(default=10.0, ge=0.0, description="Transmit antenna height AGL")
+    eirp_dbm: float
+    freq_hz: float = Field(gt=0)
+    rx_alt_m: float = Field(default=50.0, ge=0.0)
+    rx_alt_ref: Literal["agl", "msl"] = "agl"
+    radius_km: float = Field(default=60.0, gt=1.0, le=300.0)
+    n: int = Field(default=80, ge=10, le=120)
+    threshold_dbm: float = Field(default=-90.0, description="Receiver sensitivity for shading")
+
+
+class CoverageGrid(BaseModel):
+    """Received-power raster. Rows run north to south, columns west to east."""
+
+    bounds: GridBounds
+    n: int
+    power_dbm: list[list[float]]
+    threshold_dbm: float
+    covered_fraction: float
+    tx: Position
+    eirp_dbm: float
+    freq_hz: float
+    rx_alt_m: float
+    rx_alt_ref: Literal["agl", "msl"]

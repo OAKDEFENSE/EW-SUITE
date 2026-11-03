@@ -60,6 +60,9 @@ export interface EmitterTrack {
   first_seen: number;
   last_seen: number;
   geo: GeoFix | null;
+  peak_power_dbm: number | null;
+  est_eirp_dbm: number | null;
+  los: boolean | null;
 }
 
 export interface Alert {
@@ -115,6 +118,42 @@ export interface EngineState {
   spectrum: SpectrumFrame;
   tracks: EmitterTrack[];
   alerts: Alert[];
+}
+
+export interface TerrainInfo {
+  model: string;
+  description: string;
+}
+
+export interface GridBounds {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}
+
+/** Rows run north to south, columns west to east. */
+export interface TerrainGrid {
+  bounds: GridBounds;
+  n_lat: number;
+  n_lon: number;
+  elevation_m: number[][];
+}
+
+export type AltitudeRef = "agl" | "msl";
+
+/** Rows run north to south, columns west to east. */
+export interface CoverageGrid {
+  bounds: GridBounds;
+  n: number;
+  power_dbm: number[][];
+  threshold_dbm: number;
+  covered_fraction: number;
+  tx: Position;
+  eirp_dbm: number;
+  freq_hz: number;
+  rx_alt_m: number;
+  rx_alt_ref: AltitudeRef;
 }
 
 export type StreamMessage =

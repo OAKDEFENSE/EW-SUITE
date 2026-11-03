@@ -8,7 +8,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -16,11 +16,16 @@ from . import __version__
 from .engine import Engine
 from .models import (
     Alert,
+    CoverageGrid,
+    CoverageRequest,
     EmitterTrack,
     EngineState,
+    GridBounds,
     ReceiverConfig,
     ScenarioInfo,
     SignalLibraryEntry,
+    TerrainGrid,
+    TerrainInfo,
 )
 
 log = logging.getLogger("ew_core.api")
@@ -82,7 +87,11 @@ async def _run_loop(app: FastAPI) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scenario = os.environ.get("EW_SCENARIO", "littoral_patrol")
     seed_env = os.environ.get("EW_SEED")
-    app.state.engine = Engine(scenario, seed=int(seed_env) if seed_env else None)
+    app.state.engine = Engine(
+        scenario,
+        seed=int(seed_env) if seed_env else None,
+        terrain=os.environ.get("EW_TERRAIN", "synthetic"),
+    )
     app.state.broadcaster = Broadcaster()
     task = asyncio.create_task(_run_loop(app))
     try:
@@ -158,6 +167,51 @@ def create_app() -> FastAPI:
             return engine().set_receiver(ReceiverConfig.model_validate(merged.model_dump()))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/terrain", response_model=TerrainInfo)
+    def terrain() -> TerrainInfo:
+        return engine().terrain_info()
+
+    @app.get("/api/terrain/elevation")
+    def terrain_elevation(lat: float, lon: float) -> dict[str, float]:
+        return {"lat": lat, "lon": lon, "elevation_m": engine().propagation.ground_m(lat, lon)}
+
+    @app.get("/api/terrain/grid", response_model=TerrainGrid)
+    def terrain_grid(
+        south: float,
+        west: float,
+        north: float,
+        east: float,
+        n: int = Query(default=120, ge=10, le=300),
+    ) -> TerrainGrid:
+        try:
+            return engine().terrain_grid(
+                GridBounds(south=south, west=west, north=north, east=east), n
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/coverage", response_model=CoverageGrid)
+    def coverage(req: CoverageRequest) -> CoverageGrid:
+        return engine().coverage(req)
+
+    @app.get("/api/tracks/{track_id}/coverage", response_model=CoverageGrid)
+    def track_coverage(
+        track_id: str,
+        rx_alt_m: float | None = Query(default=None, ge=0),
+        rx_alt_ref: str = Query(default="agl", pattern="^(agl|msl)$"),
+        radius_km: float = Query(default=60.0, gt=1.0, le=300.0),
+        n: int = Query(default=80, ge=10, le=120),
+    ) -> CoverageGrid:
+        try:
+            grid = engine().track_coverage(
+                track_id, rx_alt_m=rx_alt_m, rx_alt_ref=rx_alt_ref, radius_km=radius_km, n=n
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="track not found") from exc
+        if grid is None:
+            raise HTTPException(status_code=409, detail="track has no geolocation fix yet")
+        return grid
 
     @app.websocket("/ws/stream")
     async def stream(ws: WebSocket) -> None:

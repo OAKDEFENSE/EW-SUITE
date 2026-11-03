@@ -53,7 +53,14 @@ docker compose up --build       # console on http://localhost:8080
   bandwidth, power, bearing, PRI, PW, identification, threat, confidence, fix quality.
   Sorted threat-first.
 - **Tactical map**: ownship with trail, DF bearing lines coloured by threat,
-  geolocation fixes with error circles.
+  geolocation fixes with error circles, optional terrain shading and a coverage heat
+  map showing where a selected emitter is detectable at a chosen receiver altitude.
+- **Terrain-aware propagation**: free-space loss plus 4/3-Earth curvature and single
+  knife-edge diffraction over a sampled terrain profile. Terrain comes from a flat model,
+  a built-in synthetic coastline, or real SRTM / ASTER `.hgt` tiles.
+- **Emitter EIRP estimation**: once a track is geolocated, its peak received power and
+  the modelled path loss give an EIRP estimate and a line-of-sight flag, which drive the
+  coverage map.
 - **Track detail**: smoothed parameters, PRF, library match notes, geolocation,
   range to fix.
 - **Alerts**: new emitter, threat, geolocation fix, track lost, system. High threats
@@ -71,6 +78,8 @@ docker compose up --build       # console on http://localhost:8080
 | `backend/ew_core/tracker.py` | Association, smoothing, aging, geolocation, reclassification |
 | `backend/ew_core/classifier.py` / `library.py` | Signal-library matching (notional, unclassified entries) |
 | `backend/ew_core/geo.py` | Geodesy and least-squares bearing triangulation |
+| `backend/ew_core/terrain.py` | Elevation models: flat, synthetic coast, `.hgt` tile reader |
+| `backend/ew_core/propagation.py` | Terrain-aware path loss and vectorised coverage grids |
 | `backend/ew_core/engine.py` | Tick loop orchestration and alerting |
 | `backend/ew_core/api.py` | REST + WebSocket service |
 | `frontend/src/components/` | Console panels |
@@ -88,6 +97,9 @@ docker compose up --build       # console on http://localhost:8080
 | GET | `/api/library` | Signal library |
 | GET | `/api/scenarios`, POST `/api/scenarios/{name}/load` | Scenario catalogue and switch |
 | GET / PUT | `/api/receiver` | Tuned band, bin count, detection threshold |
+| GET | `/api/terrain`, `/api/terrain/elevation`, `/api/terrain/grid` | Terrain model, point elevation, elevation raster |
+| POST | `/api/coverage` | Received-power raster for an arbitrary transmitter |
+| GET | `/api/tracks/{id}/coverage` | Coverage raster for a geolocated track using its estimated EIRP |
 | WS | `/ws/stream` | `state` message every tick (5 Hz default) with `new_alerts` |
 
 ## Development
@@ -106,12 +118,26 @@ CI runs the same on every push and pull request (`.github/workflows/ci.yml`).
 | `EW_SCENARIO` | `littoral_patrol` | Scenario loaded at start |
 | `EW_TICK_HZ` | `5` | Engine / stream rate |
 | `EW_SEED` | unset | Fix the simulation RNG seed |
+| `EW_TERRAIN` | `synthetic` | `flat`, `synthetic`, or `hgt:/path/to/tiles` for real elevation data |
 | `EW_PORT` | `8000` | Backend port |
 | `EW_CORS_ORIGINS` | `*` | Comma-separated allowed origins |
 | `VITE_TILE_URL` | OpenStreetMap | Map tile template; point at a local server for offline use |
 
+## Terrain data
+
+The default synthetic terrain reproduces the North Sea geometry of the built-in scenarios
+(coast running north-north-west, coastal plain, hills inland) so terrain shadowing can be
+seen without downloads. For real terrain, place `.hgt` tiles (SRTM 1 or 3 arc-second,
+or ASTER GDEM converted to `.hgt`) named like `N55W002.hgt` in a directory and start the
+backend with `EW_TERRAIN=hgt:/path/to/tiles`. Missing tiles read as sea level.
+
 ## Roadmap
 
+- Blue-force link budget: own control, telemetry and video links with jam-to-signal
+  margin against detected jammers, and relay placement checks.
+- Route exposure scoring against surveillance and fire control radar coverage.
+- KMZ export of tracks, fixes, bearing lines and coverage rasters.
+- Scenario import from JSON / CSV order-of-battle files.
 - Hardware receiver adapter (SoapySDR / vendor ESM API) implementing the
   `acquire()` contract.
 - Multi-platform bearing fusion and TDOA geolocation.

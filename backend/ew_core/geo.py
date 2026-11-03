@@ -71,58 +71,118 @@ def from_local_xy(x: float, y: float, ref_lat: float, ref_lon: float) -> tuple[f
     return lat, lon
 
 
+def _bearing_cost(
+    x: float, y: float, px: np.ndarray, py: np.ndarray, brg_rad: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Angular residuals (rad) and ranges from each observer to candidate (x, y)."""
+    dx = x - px
+    dy = y - py
+    pred = np.arctan2(dx, dy)
+    res = (pred - brg_rad + np.pi) % (2 * np.pi) - np.pi
+    return res, np.hypot(dx, dy)
+
+
 def triangulate(
     observations: Sequence[tuple[float, float, float]],
     min_spread_deg: float = 3.0,
+    max_range_m: float = 400_000.0,
 ) -> tuple[float, float, float] | None:
-    """Least-squares intersection of bearing lines.
+    """Bearings-only position estimate from a set of observer positions and bearings.
 
-    ``observations`` are ``(observer_lat, observer_lon, bearing_deg)`` tuples. The
-    estimate minimises the sum of squared perpendicular distances from the fix to each
-    bearing line. Returns ``(lat, lon, error_radius_m)`` or ``None`` when the geometry
-    is too weak (fewer than two lines, insufficient angular spread, or the fix lies
-    behind the observers).
+    ``observations`` are ``(observer_lat, observer_lon, bearing_deg)`` tuples. The estimate
+    minimises the sum of squared *angular* residuals (maximum likelihood for Gaussian
+    bearing noise). A pseudolinear "closest point to all lines" solution is deliberately
+    not used: with noisy bearings and a short baseline it is strongly biased toward the
+    observers. The solver initialises with a range search along the mean bearing and
+    refines with damped Gauss-Newton.
+
+    Returns ``(lat, lon, error_radius_m)`` or ``None`` when the geometry is too weak
+    (fewer than two bearings, insufficient angular spread, a solution behind the observers
+    or beyond ``max_range_m``, or an unusable uncertainty).
     """
     if len(observations) < 2:
         return None
 
     bearings = [b for _, _, b in observations]
-    spread = max(angular_diff_deg(b, bearings[0]) for b in bearings)
+    # Observability: the bearing must actually drift across the window. A linear fit of the
+    # (time-ordered) bearings is robust to per-sample noise, unlike a raw min/max spread,
+    # and is what catches a platform flying straight at the emitter.
+    unwrapped = np.degrees(np.unwrap(np.radians(np.array(bearings, dtype=float))))
+    if len(unwrapped) > 2:
+        slope = np.polyfit(np.arange(len(unwrapped)), unwrapped, 1)[0]
+        spread = abs(float(slope) * (len(unwrapped) - 1))
+    else:
+        spread = angular_diff_deg(bearings[0], bearings[-1])
     if spread < min_spread_deg:
         return None
 
     ref_lat = sum(o[0] for o in observations) / len(observations)
     ref_lon = sum(o[1] for o in observations) / len(observations)
+    xy = np.array([to_local_xy(lat, lon, ref_lat, ref_lon) for lat, lon, _ in observations])
+    px, py = xy[:, 0], xy[:, 1]
+    brg = np.radians(np.array(bearings, dtype=float))
+    n = brg.size
 
-    a_mat = np.zeros((2, 2))
-    b_vec = np.zeros(2)
-    points: list[np.ndarray] = []
-    dirs: list[np.ndarray] = []
-    for lat, lon, brg in observations:
-        p = np.array(to_local_xy(lat, lon, ref_lat, ref_lon))
-        d = np.array([math.sin(math.radians(brg)), math.cos(math.radians(brg))])
-        proj = np.eye(2) - np.outer(d, d)
-        a_mat += proj
-        b_vec += proj @ p
-        points.append(p)
-        dirs.append(d)
-
-    if abs(np.linalg.det(a_mat)) < 1e-9:
+    # Initial guess: best range along the mean bearing from the observer centroid.
+    mean_dir = np.array([np.sin(brg).mean(), np.cos(brg).mean()])
+    norm = float(np.hypot(*mean_dir))
+    if norm < 1e-9:
         return None
-    fix = np.linalg.solve(a_mat, b_vec)
+    mean_dir /= norm
+    best_cost, x, y = math.inf, 0.0, 0.0
+    for r in np.geomspace(200.0, max_range_m, 60):
+        cx, cy = float(mean_dir[0] * r), float(mean_dir[1] * r)
+        res, _ = _bearing_cost(cx, cy, px, py, brg)
+        cost = float(res @ res)
+        if cost < best_cost:
+            best_cost, x, y = cost, cx, cy
 
+    # Damped Gauss-Newton on the angular residuals.
+    lam = 1e-3
+    for _ in range(40):
+        res, rng = _bearing_cost(x, y, px, py, brg)
+        rng2 = np.maximum(rng * rng, 1.0)
+        jac = np.column_stack(((y - py) / rng2, -(x - px) / rng2))  # d(bearing)/d(x, y)
+        jtj = jac.T @ jac
+        g = jac.T @ res
+        try:
+            step = np.linalg.solve(jtj + lam * np.diag(np.diag(jtj)) + 1e-18 * np.eye(2), -g)
+        except np.linalg.LinAlgError:
+            return None
+        nx, ny = x + float(step[0]), y + float(step[1])
+        new_res, _ = _bearing_cost(nx, ny, px, py, brg)
+        if float(new_res @ new_res) < float(res @ res):
+            x, y = nx, ny
+            lam = max(lam / 3.0, 1e-9)
+            if float(np.hypot(*step)) < 0.5:
+                break
+        else:
+            lam *= 10.0
+            if lam > 1e6:
+                break
+
+    res, rng = _bearing_cost(x, y, px, py, brg)
+    if float(np.hypot(x, y)) > max_range_m:
+        return None
     # Reject solutions behind the majority of observers (reciprocal-bearing ambiguity).
-    ahead = sum(1 for p, d in zip(points, dirs, strict=True) if float((fix - p) @ d) > 0)
-    if ahead < 0.6 * len(points):
+    ahead = int((np.abs(res) < np.pi / 2).sum())
+    if ahead < 0.6 * n:
         return None
 
-    residuals = []
-    for p, d in zip(points, dirs, strict=True):
-        v = fix - p
-        residuals.append(abs(float(d[0] * v[1] - d[1] * v[0])))
-    rms = math.sqrt(sum(r * r for r in residuals) / len(residuals))
-    # Scale the residual by sample count: a confident fix tightens as bearings accumulate.
-    error_radius = max(100.0, 2.0 * rms / math.sqrt(max(len(points) / 4.0, 1.0)))
+    # Uncertainty from the Jacobian at the solution, with the bearing noise estimated from
+    # the residuals (floored so a perfectly consistent set still gets a finite radius).
+    rms = float(np.sqrt((res @ res) / n))
+    sigma = max(rms, math.radians(0.5))
+    rng2 = np.maximum(rng * rng, 1.0)
+    jac = np.column_stack(((y - py) / rng2, -(x - px) / rng2))
+    try:
+        cov = sigma * sigma * np.linalg.inv(jac.T @ jac)
+    except np.linalg.LinAlgError:
+        return None
+    error_radius = float(2.0 * math.sqrt(max(np.trace(cov), 0.0)))
+    if not math.isfinite(error_radius) or error_radius > 100_000.0:
+        return None
+    error_radius = max(100.0, error_radius)
 
-    lat, lon = from_local_xy(float(fix[0]), float(fix[1]), ref_lat, ref_lon)
+    lat, lon = from_local_xy(x, y, ref_lat, ref_lon)
     return lat, lon, error_radius
