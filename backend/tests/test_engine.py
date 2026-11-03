@@ -46,3 +46,42 @@ def test_load_scenario_resets_tracks():
     eng.load_scenario("quiet_range")
     assert eng.tracks == []
     assert eng.scenario_name == "quiet_range"
+
+
+def test_links_react_to_jammer_in_littoral_scenario():
+    eng = Engine("littoral_patrol", seed=3, start_time=0.0)
+    alerts = _run(eng, 40)
+    by_id = {ls.link_id: ls for ls in eng.links}
+    assert by_id["C2-UP"].state == "ok" and by_id["ADL"].state == "ok"
+    assert by_id["VID-DN"].state == "marginal"  # 5.8 GHz video at loiter range is tight
+    assert all(not ls.interferers for ls in eng.links)
+    assert not any(a.kind == AlertKind.LINK and "FAILED" in a.message for a in alerts)
+
+    # Jammer comes up at 45 s: first it is an unlocated in-band threat...
+    _run(eng, 20)
+    jam = next(t for t in eng.tracks if abs(t.freq_hz - 1.355e9) < 30e6)
+    assert jam.classification.emitter_class == EmitterClass.JAMMER
+    assert jam.classification.threat == ThreatLevel.HIGH
+    by_id = {ls.link_id: ls for ls in eng.links}
+    if jam.geo is None:
+        assert jam.id in by_id["C2-UP"].unlocated_interferers
+        assert by_id["ADL"].unlocated_interferers == []  # out of band
+
+    # ...then, once geolocated, it takes the 1.35 GHz links down and leaves the 1.05 GHz
+    # aircraft data link alone.
+    alerts = _run(eng, 60)
+    jam = eng.tracker.get(jam.id)
+    assert jam is not None and jam.geo is not None and jam.est_eirp_dbm is not None
+    by_id = {ls.link_id: ls for ls in eng.links}
+    for lid in ("C2-UP", "TLM-DN", "RLY-UP", "RLY-DN"):
+        assert by_id[lid].state == "failed", lid
+        assert [i.track_id for i in by_id[lid].interferers] == [jam.id]
+        assert by_id[lid].jam_dbm is not None and by_id[lid].jam_dbm > by_id[lid].noise_dbm
+    assert by_id["ADL"].state == "ok" and by_id["ADL"].interferers == []
+    failed_alerts = [a for a in alerts if a.kind == AlertKind.LINK and "FAILED" in a.message]
+    assert any("C2 uplink" in a.message and jam.id in a.message for a in failed_alerts)
+    assert all(a.severity == ThreatLevel.HIGH for a in failed_alerts)
+
+    grid = eng.relay_grid("C2-UP", n=20)
+    assert grid.direct_margin_db < 0
+    assert grid.best is not None

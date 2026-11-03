@@ -61,6 +61,18 @@ docker compose up --build       # console on http://localhost:8080
 - **Emitter EIRP estimation**: once a track is geolocated, its peak received power and
   the modelled path loss give an EIRP estimate and a line-of-sight flag, which drive the
   coverage map.
+- **Own links with interference**: each scenario carries a blue-force network (ground
+  station, UAS, relay, the aircraft's own data link). Every tick each link gets a terrain-
+  aware signal, thermal noise and in-band interference from any geolocated ESM track whose
+  band overlaps it, scaled by bandwidth overlap, giving a SINR margin and an ok / marginal /
+  failed state with alerts on transitions. In-band emitters without a fix are flagged as
+  unlocated. The links panel shows it all; the map draws blue nodes and status-coloured
+  link lines.
+- **Relay placement**: for any link, a raster of the minimum two-hop margin at every
+  candidate relay position (interference at the relay included) with the best site marked.
+- **Jammer recognition**: a wideband-CW library entry classifies barrage jammers; the
+  littoral scenario brings one up after 45 s so the UAS command uplink can be watched
+  failing and the relay sites recomputed.
 - **Track detail**: smoothed parameters, PRF, library match notes, geolocation,
   range to fix.
 - **Alerts**: new emitter, threat, geolocation fix, track lost, system. High threats
@@ -80,6 +92,7 @@ docker compose up --build       # console on http://localhost:8080
 | `backend/ew_core/geo.py` | Geodesy and least-squares bearing triangulation |
 | `backend/ew_core/terrain.py` | Elevation models: flat, synthetic coast, `.hgt` tile reader |
 | `backend/ew_core/propagation.py` | Terrain-aware path loss and vectorised coverage grids |
+| `backend/ew_core/links.py` | Blue-force link budgets, interference from the ESM picture, relay-site grids |
 | `backend/ew_core/engine.py` | Tick loop orchestration and alerting |
 | `backend/ew_core/api.py` | REST + WebSocket service |
 | `frontend/src/components/` | Console panels |
@@ -100,6 +113,9 @@ docker compose up --build       # console on http://localhost:8080
 | GET | `/api/terrain`, `/api/terrain/elevation`, `/api/terrain/grid` | Terrain model, point elevation, elevation raster |
 | POST | `/api/coverage` | Received-power raster for an arbitrary transmitter |
 | GET | `/api/tracks/{id}/coverage` | Coverage raster for a geolocated track using its estimated EIRP |
+| GET / PUT | `/api/blue` | Blue-force network (nodes and links); PUT replaces it |
+| GET | `/api/links` | Current link budgets and states |
+| GET | `/api/links/{id}/relay-grid` | Two-hop margin raster for candidate relay sites |
 | WS | `/ws/stream` | `state` message every tick (5 Hz default) with `new_alerts` |
 
 ## Development
@@ -133,8 +149,6 @@ backend with `EW_TERRAIN=hgt:/path/to/tiles`. Missing tiles read as sea level.
 
 ## Roadmap
 
-- Blue-force link budget: own control, telemetry and video links with jam-to-signal
-  margin against detected jammers, and relay placement checks.
 - Route exposure scoring against surveillance and fire control radar coverage.
 - KMZ export of tracks, fixes, bearing lines and coverage rasters.
 - Scenario import from JSON / CSV order-of-battle files.

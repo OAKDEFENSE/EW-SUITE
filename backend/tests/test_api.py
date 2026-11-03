@@ -85,3 +85,44 @@ def test_coverage_endpoints(client):
     assert len(r.json()["power_dbm"]) == 12
     assert client.get("/api/tracks/E-999/coverage").status_code == 404
     assert client.post("/api/coverage", json={"lat": 55, "lon": -1}).status_code == 422
+
+
+def test_blue_network_and_links(client):
+    net = client.get("/api/blue").json()
+    assert {n["id"] for n in net["nodes"]} >= {"OWN", "GCS"}
+    links = client.get("/api/links").json()
+    assert isinstance(links, list)
+    state = client.get("/api/state").json()
+    assert "blue" in state and "links" in state
+    # Replace the network with a minimal valid one, then reject an invalid one.
+    minimal = {
+        "nodes": [
+            {"id": "OWN", "name": "own", "kind": "ownship"},
+            {
+                "id": "G",
+                "name": "g",
+                "kind": "ground",
+                "position": {"lat": 55.4, "lon": -1.5, "alt_m": 10},
+            },
+        ],
+        "links": [
+            {
+                "id": "L1",
+                "name": "l1",
+                "tx": "OWN",
+                "rx": "G",
+                "freq_hz": 1e9,
+                "bandwidth_hz": 1e6,
+                "tx_power_dbm": 40,
+            }
+        ],
+    }
+    r = client.put("/api/blue", json=minimal)
+    assert r.status_code == 200 and r.json()["links"][0]["id"] == "L1"
+    bad = {**minimal, "links": [{**minimal["links"][0], "rx": "NOPE"}]}
+    assert client.put("/api/blue", json=bad).status_code == 422
+    r = client.get("/api/links/L1/relay-grid", params={"n": 12, "radius_km": 20})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["margin_db"]) == 12 and body["link_id"] == "L1"
+    assert client.get("/api/links/NOPE/relay-grid").status_code == 404

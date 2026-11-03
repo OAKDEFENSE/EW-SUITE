@@ -29,7 +29,9 @@ def fspl_db(distance_m: NDArray[np.float64] | float, freq_hz: float) -> NDArray[
 def knife_edge_loss_db(v: NDArray[np.float64] | float) -> NDArray[np.float64]:
     """ITU-R P.526 single knife-edge approximation; zero below v = -0.78."""
     v = np.asarray(v, dtype=float)
-    loss = 6.9 + 20.0 * np.log10(np.sqrt((v - 0.1) ** 2 + 1.0) + v - 0.1)
+    # Clamp before evaluating so -inf (no profile samples) cannot produce inf - inf.
+    v_safe = np.maximum(v, -0.78)
+    loss = 6.9 + 20.0 * np.log10(np.sqrt((v_safe - 0.1) ** 2 + 1.0) + v_safe - 0.1)
     return np.where(v > -0.78, loss, 0.0)
 
 

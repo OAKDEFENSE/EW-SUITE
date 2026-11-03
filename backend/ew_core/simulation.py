@@ -17,7 +17,18 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import geo
-from .models import Ownship, Position, PulseParams, ReceiverConfig, ScenarioInfo, SpectrumFrame
+from .models import (
+    BlueLink,
+    BlueNetwork,
+    BlueNode,
+    BlueNodeKind,
+    Ownship,
+    Position,
+    PulseParams,
+    ReceiverConfig,
+    ScenarioInfo,
+    SpectrumFrame,
+)
 from .propagation import PropagationModel
 from .terrain import FlatTerrain, Terrain
 
@@ -46,6 +57,7 @@ class SimEmitter:
     speed_mps: float = 0.0
     heading_deg: float = 0.0
     alt_m: float = 10.0  # antenna height above ground level
+    start_time_s: float = 0.0  # silent until this scenario time
 
     def step(self, dt: float) -> None:
         if self.speed_mps > 0:
@@ -54,6 +66,8 @@ class SimEmitter:
             )
 
     def transmitting(self, t: float) -> bool:
+        if t < self.start_time_s:
+            return False
         if self.duty_cycle >= 1.0:
             return True
         return (t % self.burst_period_s) < self.duty_cycle * self.burst_period_s
@@ -108,6 +122,7 @@ class Scenario:
     route: Route
     emitters: list[SimEmitter] = field(default_factory=list)
     noise_floor_dbm: float = -100.0
+    blue_network: BlueNetwork = field(default_factory=BlueNetwork)
 
     def info(self) -> ScenarioInfo:
         return ScenarioInfo(name=self.name, title=self.title, description=self.description)
@@ -121,6 +136,139 @@ class PulseDescriptor:
     bearing_deg: float
     power_dbm: float
     pulse: PulseParams | None
+
+
+def littoral_blue_network() -> BlueNetwork:
+    """Own forces for the littoral scenario: a coastal ground station flying a UAS, with a
+    tethered relay available, plus the patrol aircraft's own data link."""
+    return BlueNetwork(
+        nodes=[
+            BlueNode(
+                id="OWN",
+                name="Patrol aircraft",
+                kind=BlueNodeKind.OWNSHIP,
+                antenna_gain_dbi=3.0,
+            ),
+            BlueNode(
+                id="GCS",
+                name="Coastal ground control station",
+                kind=BlueNodeKind.GROUND,
+                position=Position(lat=55.42, lon=-1.58, alt_m=15.0),
+                antenna_gain_dbi=8.0,
+                noise_figure_db=4.0,
+            ),
+            BlueNode(
+                id="HAWK1",
+                name="Hawk-1 (blue UAS)",
+                kind=BlueNodeKind.UAS,
+                position=Position(lat=55.62, lon=-1.05, alt_m=600.0),
+                alt_ref="msl",
+                antenna_gain_dbi=2.0,
+            ),
+            BlueNode(
+                id="RELAY1",
+                name="Relay-1 (tethered)",
+                kind=BlueNodeKind.RELAY,
+                position=Position(lat=55.50, lon=-1.40, alt_m=300.0),
+                antenna_gain_dbi=4.0,
+            ),
+        ],
+        links=[
+            BlueLink(
+                id="C2-UP",
+                name="Hawk-1 C2 uplink",
+                tx="GCS",
+                rx="HAWK1",
+                freq_hz=1.35 * GHZ,
+                bandwidth_hz=5 * MHZ,
+                tx_power_dbm=40.0,
+                tx_gain_dbi=8.0,
+                required_snr_db=10.0,
+            ),
+            BlueLink(
+                id="TLM-DN",
+                name="Hawk-1 telemetry",
+                tx="HAWK1",
+                rx="GCS",
+                freq_hz=1.36 * GHZ,
+                bandwidth_hz=2 * MHZ,
+                tx_power_dbm=33.0,
+                tx_gain_dbi=2.0,
+                required_snr_db=8.0,
+            ),
+            BlueLink(
+                id="VID-DN",
+                name="Hawk-1 video",
+                tx="HAWK1",
+                rx="GCS",
+                freq_hz=5.76 * GHZ,
+                bandwidth_hz=10 * MHZ,
+                tx_power_dbm=40.0,
+                tx_gain_dbi=5.0,
+                required_snr_db=8.0,
+            ),
+            BlueLink(
+                id="RLY-UP",
+                name="C2 via Relay-1 (GCS leg)",
+                tx="GCS",
+                rx="RELAY1",
+                freq_hz=1.35 * GHZ,
+                bandwidth_hz=5 * MHZ,
+                tx_power_dbm=40.0,
+                tx_gain_dbi=8.0,
+                required_snr_db=10.0,
+            ),
+            BlueLink(
+                id="RLY-DN",
+                name="C2 via Relay-1 (UAS leg)",
+                tx="RELAY1",
+                rx="HAWK1",
+                freq_hz=1.35 * GHZ,
+                bandwidth_hz=5 * MHZ,
+                tx_power_dbm=37.0,
+                tx_gain_dbi=4.0,
+                required_snr_db=10.0,
+            ),
+            BlueLink(
+                id="ADL",
+                name="Aircraft data link",
+                tx="OWN",
+                rx="GCS",
+                freq_hz=1.05 * GHZ,
+                bandwidth_hz=3 * MHZ,
+                tx_power_dbm=47.0,
+                tx_gain_dbi=3.0,
+                required_snr_db=10.0,
+            ),
+        ],
+    )
+
+
+def quiet_blue_network() -> BlueNetwork:
+    return BlueNetwork(
+        nodes=[
+            BlueNode(id="OWN", name="Patrol aircraft", kind=BlueNodeKind.OWNSHIP),
+            BlueNode(
+                id="GCS",
+                name="Range control",
+                kind=BlueNodeKind.GROUND,
+                position=Position(lat=55.42, lon=-1.58, alt_m=15.0),
+                antenna_gain_dbi=8.0,
+            ),
+        ],
+        links=[
+            BlueLink(
+                id="ADL",
+                name="Aircraft data link",
+                tx="OWN",
+                rx="GCS",
+                freq_hz=1.05 * GHZ,
+                bandwidth_hz=3 * MHZ,
+                tx_power_dbm=47.0,
+                tx_gain_dbi=3.0,
+            ),
+        ],
+    )
 
 
 def build_scenarios() -> dict[str, Scenario]:
@@ -137,6 +285,7 @@ def build_scenarios() -> dict[str, Scenario]:
             speed_mps=240 * KT,
             alt_m=3000,
         ),
+        blue_network=littoral_blue_network(),
         emitters=[
             SimEmitter(
                 id="SIM-ASR",
@@ -211,6 +360,19 @@ def build_scenarios() -> dict[str, Scenario]:
                 burst_period_s=12,
             ),
             SimEmitter(
+                id="SIM-JAM",
+                name="Trawler barrage jammer",
+                lat=55.55,
+                lon=-1.30,
+                freq_hz=1.355 * GHZ,
+                bandwidth_hz=40 * MHZ,
+                eirp_dbm=66,
+                speed_mps=4,
+                heading_deg=180,
+                alt_m=12,
+                start_time_s=45.0,
+            ),
+            SimEmitter(
                 id="SIM-VHF-INLAND",
                 name="Inland VHF repeater",
                 lat=55.42,
@@ -269,6 +431,7 @@ def build_scenarios() -> dict[str, Scenario]:
             speed_mps=180 * KT,
             alt_m=2500,
         ),
+        blue_network=quiet_blue_network(),
         emitters=[
             SimEmitter(
                 id="SIM-ASR",

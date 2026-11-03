@@ -10,11 +10,12 @@ export type EmitterClass =
   | "data_link"
   | "uas_control"
   | "uas_video"
+  | "jammer"
   | "unknown";
 
 export type TrackStatus = "tentative" | "confirmed" | "lost";
 
-export type AlertKind = "new_track" | "threat" | "track_lost" | "geo_fix" | "system";
+export type AlertKind = "new_track" | "threat" | "track_lost" | "geo_fix" | "link" | "system";
 
 export interface PulseParams {
   pri_us: number;
@@ -107,7 +108,81 @@ export interface SignalLibraryEntry {
   pri_max_us: number | null;
   pw_min_us: number | null;
   pw_max_us: number | null;
+  bw_min_hz: number | null;
+  bw_max_hz: number | null;
   notes: string;
+}
+
+export type BlueNodeKind = "ownship" | "ground" | "uas" | "relay" | "ship";
+
+export interface BlueNode {
+  id: string;
+  name: string;
+  kind: BlueNodeKind;
+  position: Position | null;
+  alt_ref: AltitudeRef;
+  antenna_gain_dbi: number;
+  noise_figure_db: number;
+}
+
+export interface BlueLink {
+  id: string;
+  name: string;
+  tx: string;
+  rx: string;
+  freq_hz: number;
+  bandwidth_hz: number;
+  tx_power_dbm: number;
+  tx_gain_dbi: number;
+  required_snr_db: number;
+}
+
+export interface BlueNetwork {
+  nodes: BlueNode[];
+  links: BlueLink[];
+}
+
+export type LinkState = "ok" | "marginal" | "failed";
+
+export interface LinkInterferer {
+  track_id: string;
+  name: string;
+  freq_hz: number;
+  jam_dbm: number;
+  los: boolean;
+}
+
+export interface LinkStatus {
+  link_id: string;
+  name: string;
+  tx: string;
+  rx: string;
+  tx_position: Position;
+  rx_position: Position;
+  distance_m: number;
+  los: boolean;
+  signal_dbm: number;
+  noise_dbm: number;
+  jam_dbm: number | null;
+  snr_db: number;
+  sinr_db: number;
+  margin_db: number;
+  state: LinkState;
+  interferers: LinkInterferer[];
+  unlocated_interferers: string[];
+}
+
+/** Rows run north to south, columns west to east. */
+export interface RelayGrid {
+  link_id: string;
+  bounds: GridBounds;
+  n: number;
+  margin_db: number[][];
+  relay_alt_m: number;
+  relay_alt_ref: AltitudeRef;
+  best: Position | null;
+  best_margin_db: number | null;
+  direct_margin_db: number;
 }
 
 export interface EngineState {
@@ -118,6 +193,8 @@ export interface EngineState {
   spectrum: SpectrumFrame;
   tracks: EmitterTrack[];
   alerts: Alert[];
+  blue: BlueNetwork;
+  links: LinkStatus[];
 }
 
 export interface TerrainInfo {

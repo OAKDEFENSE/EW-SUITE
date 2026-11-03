@@ -92,3 +92,18 @@ export function gridToDataUrl(grid: number[][], color: (v: number) => Rgba): str
   ctx.putImageData(img, 0, 0);
   return canvas.toDataURL("image/png");
 }
+
+/** Span of positive link margin the relay ramp covers. */
+export const MARGIN_SPAN_DB = 20;
+
+/**
+ * Link margin to colour: failed (< 0 dB) red, marginal amber, then green deepening with
+ * margin up to MARGIN_SPAN_DB. Non-finite values are transparent.
+ */
+export function marginColor(marginDb: number): Rgba {
+  if (!Number.isFinite(marginDb)) return [0, 0, 0, 0];
+  if (marginDb < 0) return [200, 50, 40, 110];
+  if (marginDb < 6) return [225, 180, 60, 140];
+  const t = Math.min(1, (marginDb - 6) / (MARGIN_SPAN_DB - 6));
+  return [Math.round(lerp(120, 30, t)), Math.round(lerp(200, 170, t)), Math.round(lerp(120, 90, t)), 165];
+}

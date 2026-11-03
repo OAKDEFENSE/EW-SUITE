@@ -16,12 +16,15 @@ from . import __version__
 from .engine import Engine
 from .models import (
     Alert,
+    BlueNetwork,
     CoverageGrid,
     CoverageRequest,
     EmitterTrack,
     EngineState,
     GridBounds,
+    LinkStatus,
     ReceiverConfig,
+    RelayGrid,
     ScenarioInfo,
     SignalLibraryEntry,
     TerrainGrid,
@@ -212,6 +215,37 @@ def create_app() -> FastAPI:
         if grid is None:
             raise HTTPException(status_code=409, detail="track has no geolocation fix yet")
         return grid
+
+    @app.get("/api/blue", response_model=BlueNetwork)
+    def blue() -> BlueNetwork:
+        return engine().blue
+
+    @app.put("/api/blue", response_model=BlueNetwork)
+    def set_blue(network: BlueNetwork) -> BlueNetwork:
+        return engine().set_blue(network)
+
+    @app.get("/api/links", response_model=list[LinkStatus])
+    def links() -> list[LinkStatus]:
+        return engine().links
+
+    @app.get("/api/links/{link_id}/relay-grid", response_model=RelayGrid)
+    def relay_grid(
+        link_id: str,
+        relay_alt_m: float = Query(default=300.0, ge=0),
+        relay_alt_ref: str = Query(default="agl", pattern="^(agl|msl)$"),
+        radius_km: float | None = Query(default=None, gt=1.0, le=300.0),
+        n: int = Query(default=60, ge=10, le=100),
+    ) -> RelayGrid:
+        try:
+            return engine().relay_grid(
+                link_id,
+                relay_alt_m=relay_alt_m,
+                relay_alt_ref=relay_alt_ref,
+                radius_km=radius_km,
+                n=n,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="link not found") from exc
 
     @app.websocket("/ws/stream")
     async def stream(ws: WebSocket) -> None:

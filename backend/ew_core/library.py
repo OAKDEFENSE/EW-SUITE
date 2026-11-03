@@ -123,6 +123,17 @@ DEFAULT_LIBRARY: list[SignalLibraryEntry] = [
         notes="Commercial magnetron navigation radar, 20-48 rpm scan.",
     ),
     SignalLibraryEntry(
+        id="JAM-WB",
+        name="Wideband noise jammer",
+        emitter_class=EmitterClass.JAMMER,
+        threat=ThreatLevel.HIGH,
+        freq_min_hz=400 * MHZ,
+        freq_max_hz=6 * GHZ,
+        pulsed=False,
+        bw_min_hz=30 * MHZ,
+        notes="Continuous wideband noise, far wider than any comms or video link in band.",
+    ),
+    SignalLibraryEntry(
         id="FC-KU",
         name="Ku-band fire control radar",
         emitter_class=EmitterClass.FIRE_CONTROL_RADAR,

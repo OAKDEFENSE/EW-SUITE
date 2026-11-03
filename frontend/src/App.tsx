@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { AlertFeed } from "./components/AlertFeed";
+import { LinksPanel } from "./components/LinksPanel";
 import { SpectrumPanel } from "./components/SpectrumPanel";
 import { StatusBar } from "./components/StatusBar";
 import { TacticalMap, type RxAltitudeOption } from "./components/TacticalMap";
@@ -8,7 +9,7 @@ import { TrackDetail } from "./components/TrackDetail";
 import { TrackTable } from "./components/TrackTable";
 import { api } from "./lib/api";
 import { StreamClient, streamUrl } from "./lib/stream";
-import type { CoverageGrid, ReceiverConfig, ScenarioInfo, SignalLibraryEntry } from "./lib/types";
+import type { CoverageGrid, ReceiverConfig, RelayGrid, ScenarioInfo, SignalLibraryEntry } from "./lib/types";
 import { initialState, reducer } from "./state/store";
 
 export function App() {
@@ -20,6 +21,9 @@ export function App() {
   const [rxAltitude, setRxAltitude] = useState<RxAltitudeOption>("ownship");
   const [coverage, setCoverage] = useState<CoverageGrid | null>(null);
   const [coverageBusy, setCoverageBusy] = useState(false);
+  const [relayLinkId, setRelayLinkId] = useState<string | null>(null);
+  const [relay, setRelay] = useState<RelayGrid | null>(null);
+  const [relayBusy, setRelayBusy] = useState(false);
   const clientRef = useRef<StreamClient | null>(null);
 
   useEffect(() => {
@@ -66,6 +70,34 @@ export function App() {
       setError(String(e));
     }
   }, []);
+
+  // Relay-site raster for one link; refreshed as the picture (and ownship) moves.
+  useEffect(() => {
+    if (!relayLinkId) {
+      setRelay(null);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      setRelayBusy(true);
+      api
+        .relayGrid(relayLinkId, { n: 70 })
+        .then((g) => {
+          if (!cancelled) {
+            setRelay(g);
+            setError(null);
+          }
+        })
+        .catch((e) => !cancelled && setError(String(e)))
+        .finally(() => !cancelled && setRelayBusy(false));
+    };
+    load();
+    const timer = window.setInterval(load, 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [relayLinkId]);
 
   const engine = state.engine;
   const selected = useMemo(
@@ -156,6 +188,19 @@ export function App() {
             onToggleCoverage={() => setCoverageEnabled((v) => !v)}
             rxAltitude={rxAltitude}
             onRxAltitude={setRxAltitude}
+            blue={engine?.blue ?? null}
+            links={engine?.links ?? []}
+            relay={relay}
+          />
+        </section>
+        <section className="panel panel-links">
+          <LinksPanel
+            links={engine?.links ?? []}
+            blue={engine?.blue ?? null}
+            relayLinkId={relayLinkId}
+            relayBusy={relayBusy}
+            onToggleRelay={(id) => setRelayLinkId((cur) => (cur === id ? null : id))}
+            onSelectTrack={selectTrack}
           />
         </section>
         <section className="panel panel-tracks">

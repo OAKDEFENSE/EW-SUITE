@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ThreatLevel(StrEnum):
@@ -33,6 +33,7 @@ class EmitterClass(StrEnum):
     DATA_LINK = "data_link"
     UAS_CONTROL = "uas_control"
     UAS_VIDEO = "uas_video"
+    JAMMER = "jammer"
     UNKNOWN = "unknown"
 
 
@@ -55,6 +56,8 @@ class SignalLibraryEntry(BaseModel):
     pri_max_us: float | None = None
     pw_min_us: float | None = None
     pw_max_us: float | None = None
+    bw_min_hz: float | None = Field(default=None, description="Minimum occupied bandwidth")
+    bw_max_hz: float | None = Field(default=None, description="Maximum occupied bandwidth")
     notes: str = ""
 
 
@@ -138,6 +141,7 @@ class AlertKind(StrEnum):
     THREAT = "threat"
     TRACK_LOST = "track_lost"
     GEO_FIX = "geo_fix"
+    LINK = "link"
     SYSTEM = "system"
 
 
@@ -183,6 +187,125 @@ class ScenarioInfo(BaseModel):
     description: str
 
 
+# ----------------------------------------------------------------- blue force links
+
+
+class BlueNodeKind(StrEnum):
+    OWNSHIP = "ownship"
+    GROUND = "ground"
+    UAS = "uas"
+    RELAY = "relay"
+    SHIP = "ship"
+
+
+class BlueNode(BaseModel):
+    id: str
+    name: str
+    kind: BlueNodeKind
+    position: Position | None = Field(
+        default=None, description="Fixed position; None only for the ownship node"
+    )
+    alt_ref: Literal["agl", "msl"] = "agl"
+    antenna_gain_dbi: float = 2.0
+    noise_figure_db: float = 5.0
+
+
+class BlueLink(BaseModel):
+    id: str
+    name: str
+    tx: str
+    rx: str
+    freq_hz: float = Field(gt=0)
+    bandwidth_hz: float = Field(gt=0)
+    tx_power_dbm: float
+    tx_gain_dbi: float = 2.0
+    required_snr_db: float = 10.0
+
+
+class BlueNetwork(BaseModel):
+    nodes: list[BlueNode] = Field(default_factory=list)
+    links: list[BlueLink] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_refs(self) -> BlueNetwork:
+        ids = [n.id for n in self.nodes]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate node ids")
+        if sum(1 for n in self.nodes if n.kind == BlueNodeKind.OWNSHIP) > 1:
+            raise ValueError("at most one ownship node")
+        for n in self.nodes:
+            if n.kind != BlueNodeKind.OWNSHIP and n.position is None:
+                raise ValueError(f"node {n.id} needs a position")
+        link_ids = [link.id for link in self.links]
+        if len(link_ids) != len(set(link_ids)):
+            raise ValueError("duplicate link ids")
+        for link in self.links:
+            if link.tx not in ids or link.rx not in ids:
+                raise ValueError(f"link {link.id} references an unknown node")
+            if link.tx == link.rx:
+                raise ValueError(f"link {link.id} has the same node at both ends")
+        return self
+
+    def node(self, node_id: str) -> BlueNode | None:
+        return next((n for n in self.nodes if n.id == node_id), None)
+
+    def link(self, link_id: str) -> BlueLink | None:
+        return next((link for link in self.links if link.id == link_id), None)
+
+
+class LinkState(StrEnum):
+    OK = "ok"
+    MARGINAL = "marginal"
+    FAILED = "failed"
+
+
+class LinkInterferer(BaseModel):
+    track_id: str
+    name: str
+    freq_hz: float
+    jam_dbm: float = Field(description="In-band interference power at the link receiver")
+    los: bool
+
+
+class LinkStatus(BaseModel):
+    link_id: str
+    name: str
+    tx: str
+    rx: str
+    tx_position: Position
+    rx_position: Position
+    distance_m: float
+    los: bool
+    signal_dbm: float
+    noise_dbm: float
+    jam_dbm: float | None
+    snr_db: float
+    sinr_db: float
+    margin_db: float
+    state: LinkState
+    interferers: list[LinkInterferer] = Field(default_factory=list)
+    unlocated_interferers: list[str] = Field(
+        default_factory=list, description="In-band tracks detected but not yet geolocated"
+    )
+
+
+class RelayGrid(BaseModel):
+    """Minimum two-hop link margin (dB) for a relay placed at each cell.
+
+    Rows run north to south, columns west to east.
+    """
+
+    link_id: str
+    bounds: GridBounds
+    n: int
+    margin_db: list[list[float]]
+    relay_alt_m: float
+    relay_alt_ref: Literal["agl", "msl"]
+    best: Position | None
+    best_margin_db: float | None
+    direct_margin_db: float
+
+
 class EngineState(BaseModel):
     time: float
     scenario: str
@@ -191,6 +314,8 @@ class EngineState(BaseModel):
     spectrum: SpectrumFrame
     tracks: list[EmitterTrack]
     alerts: list[Alert]
+    blue: BlueNetwork
+    links: list[LinkStatus]
 
 
 class TerrainInfo(BaseModel):

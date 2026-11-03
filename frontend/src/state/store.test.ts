@@ -31,6 +31,8 @@ function engine(tracks: EmitterTrack[]): EngineState {
     spectrum: { time: 1, start_hz: 0, stop_hz: 1, power_dbm: [-100], noise_floor_dbm: -100 },
     tracks,
     alerts: [],
+    blue: { nodes: [], links: [] },
+    links: [],
   };
 }
 

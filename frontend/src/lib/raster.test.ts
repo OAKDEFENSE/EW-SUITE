@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COVERAGE_SPAN_DB, coverageColor, gridToRgba, terrainColor } from "./raster";
+import { COVERAGE_SPAN_DB, coverageColor, gridToRgba, marginColor, terrainColor } from "./raster";
 
 describe("coverageColor", () => {
   it("is transparent below the threshold and opaque above", () => {
@@ -41,5 +41,18 @@ describe("gridToRgba", () => {
   });
   it("handles an empty grid", () => {
     expect(gridToRgba([], () => [0, 0, 0, 0]).length).toBe(0);
+  });
+});
+
+describe("marginColor", () => {
+  it("is red when failed, amber when marginal, green when healthy", () => {
+    const failed = marginColor(-3);
+    const marginal = marginColor(3);
+    const good = marginColor(12);
+    expect(failed[0]).toBeGreaterThan(failed[1]);
+    expect(marginal[0]).toBeGreaterThan(marginal[2]);
+    expect(good[1]).toBeGreaterThan(good[0]);
+    expect(marginColor(Number.NaN)[3]).toBe(0);
+    expect(marginColor(50)).toEqual(marginColor(20));
   });
 });

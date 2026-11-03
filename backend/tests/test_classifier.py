@@ -43,3 +43,14 @@ def test_pulse_mismatch_lowers_confidence_but_keeps_band():
     bad_pri = classify(_det(2.9e9, 50, 10), DEFAULT_LIBRARY)
     assert bad_pri.library_id == "SR-S"
     assert bad_pri.confidence < good.confidence
+
+
+def test_wideband_cw_is_a_jammer_and_narrow_cw_is_not():
+    wide = Detection(freq_hz=1.355e9, bandwidth_hz=44e6, power_dbm=-55)
+    narrow = Detection(freq_hz=2.44e9, bandwidth_hz=17e6, power_dbm=-60)
+    assert classify(wide, DEFAULT_LIBRARY).emitter_class == EmitterClass.JAMMER
+    assert classify(wide, DEFAULT_LIBRARY).threat == ThreatLevel.HIGH
+    assert classify(narrow, DEFAULT_LIBRARY).library_id == "UAS-C2-24"
+    # A wideband CW signal in the UAS band is the jammer, not the control link.
+    wide_24 = Detection(freq_hz=2.44e9, bandwidth_hz=60e6, power_dbm=-55)
+    assert classify(wide_24, DEFAULT_LIBRARY).emitter_class == EmitterClass.JAMMER

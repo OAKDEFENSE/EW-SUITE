@@ -3,8 +3,17 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { destination } from "../lib/geo";
 import { formatBearing, formatDistance, formatFreq } from "../lib/format";
-import { coverageColor, gridToDataUrl, terrainColor } from "../lib/raster";
-import type { CoverageGrid, EmitterTrack, GridBounds, Ownship, TerrainGrid } from "../lib/types";
+import { coverageColor, gridToDataUrl, marginColor, terrainColor } from "../lib/raster";
+import type {
+  BlueNetwork,
+  CoverageGrid,
+  EmitterTrack,
+  GridBounds,
+  LinkStatus,
+  Ownship,
+  RelayGrid,
+  TerrainGrid,
+} from "../lib/types";
 import { THREAT_COLOR } from "./SpectrumPanel";
 
 export type RxAltitudeOption = "ownship" | "agl50" | "agl500";
@@ -27,7 +36,24 @@ interface Props {
   onToggleCoverage: () => void;
   rxAltitude: RxAltitudeOption;
   onRxAltitude: (o: RxAltitudeOption) => void;
+  blue: BlueNetwork | null;
+  links: LinkStatus[];
+  relay: RelayGrid | null;
 }
+
+const LINK_COLOR: Record<LinkStatus["state"], string> = {
+  ok: "#4fb286",
+  marginal: "#e0b84d",
+  failed: "#f06449",
+};
+
+const NODE_GLYPH: Record<string, string> = {
+  ground: "■",
+  uas: "✈",
+  relay: "◆",
+  ship: "⬟",
+  ownship: "",
+};
 
 function toLeafletBounds(b: GridBounds): L.LatLngBoundsExpression {
   return [
@@ -60,11 +86,18 @@ export function TacticalMap({
   onToggleCoverage,
   rxAltitude,
   onRxAltitude,
+  blue,
+  links,
+  relay,
 }: Props) {
   const divRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const terrainLayer = useRef<L.ImageOverlay | null>(null);
   const coverageLayer = useRef<L.ImageOverlay | null>(null);
+  const relayLayer = useRef<L.ImageOverlay | null>(null);
+  const relayBest = useRef<L.CircleMarker | null>(null);
+  const blueNodes = useRef<Map<string, L.Marker>>(new Map());
+  const linkLines = useRef<Map<string, L.Polyline>>(new Map());
   const [showTerrain, setShowTerrain] = useState(false);
   const [terrainGrid, setTerrainGrid] = useState<TerrainGrid | null>(null);
   const [terrainError, setTerrainError] = useState<string | null>(null);
@@ -169,6 +202,106 @@ export function TacticalMap({
       className: "coverage-overlay",
     }).addTo(map);
   }, [coverage, coverageEnabled]);
+
+  // Relay-site raster.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (relayLayer.current) {
+      map.removeLayer(relayLayer.current);
+      relayLayer.current = null;
+    }
+    if (relayBest.current) {
+      map.removeLayer(relayBest.current);
+      relayBest.current = null;
+    }
+    if (!relay) return;
+    const url = gridToDataUrl(relay.margin_db, marginColor);
+    if (!url) return;
+    relayLayer.current = L.imageOverlay(url, toLeafletBounds(relay.bounds), {
+      opacity: 0.8,
+      interactive: false,
+      className: "relay-overlay",
+    }).addTo(map);
+    if (relay.best) {
+      relayBest.current = L.circleMarker([relay.best.lat, relay.best.lon], {
+        radius: 7,
+        color: "#ffffff",
+        fillColor: "#4fb286",
+        fillOpacity: 0.9,
+        weight: 2,
+      })
+        .bindTooltip(
+          `Best relay site · margin ${relay.best_margin_db?.toFixed(0)} dB (direct ${relay.direct_margin_db.toFixed(0)} dB)`,
+          { direction: "top" },
+        )
+        .addTo(map);
+    }
+  }, [relay]);
+
+  // Blue nodes and link lines.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ownship) return;
+    const liveNodes = new Set<string>();
+    for (const node of blue?.nodes ?? []) {
+      if (node.kind === "ownship" || !node.position) continue;
+      liveNodes.add(node.id);
+      const pos: L.LatLngExpression = [node.position.lat, node.position.lon];
+      let marker = blueNodes.current.get(node.id);
+      if (!marker) {
+        const icon = L.divIcon({
+          className: "blue-node-icon",
+          html: `<div class="blue-node blue-${node.kind}" title="${node.name}">${NODE_GLYPH[node.kind] ?? "●"}<span>${node.id}</span></div>`,
+          iconSize: [60, 20],
+          iconAnchor: [8, 10],
+        });
+        marker = L.marker(pos, { icon, interactive: true, zIndexOffset: 500 }).addTo(map);
+        marker.bindTooltip(node.name, { direction: "top" });
+        blueNodes.current.set(node.id, marker);
+      } else {
+        marker.setLatLng(pos);
+      }
+    }
+    for (const [id, marker] of blueNodes.current) {
+      if (liveNodes.has(id)) continue;
+      map.removeLayer(marker);
+      blueNodes.current.delete(id);
+    }
+
+    const liveLinks = new Set<string>();
+    for (const l of links) {
+      liveLinks.add(l.link_id);
+      const latlngs: L.LatLngExpression[] = [
+        [l.tx_position.lat, l.tx_position.lon],
+        [l.rx_position.lat, l.rx_position.lon],
+      ];
+      const style: L.PolylineOptions = {
+        color: LINK_COLOR[l.state],
+        weight: l.state === "failed" ? 3 : 2,
+        opacity: 0.9,
+        dashArray: l.jam_dbm !== null ? "2 6" : undefined,
+      };
+      let line = linkLines.current.get(l.link_id);
+      if (!line) {
+        line = L.polyline(latlngs, { ...style, className: "blue-link" }).addTo(map);
+        linkLines.current.set(l.link_id, line);
+      } else {
+        line.setLatLngs(latlngs);
+        line.setStyle(style);
+      }
+      line.bindTooltip(
+        `<b>${l.name}</b> · ${l.state.toUpperCase()}<br/>margin ${l.margin_db >= 0 ? "+" : ""}${l.margin_db.toFixed(0)} dB · SINR ${l.sinr_db.toFixed(0)} dB` +
+          (l.jam_dbm !== null ? `<br/>interference ${l.jam_dbm.toFixed(0)} dBm` : ""),
+        { sticky: true },
+      );
+    }
+    for (const [id, line] of linkLines.current) {
+      if (liveLinks.has(id)) continue;
+      map.removeLayer(line);
+      linkLines.current.delete(id);
+    }
+  }, [blue, links, ownship]);
 
   // Ownship
   useEffect(() => {
@@ -316,6 +449,20 @@ export function TacticalMap({
               {coverage.rx_alt_ref === "msl" ? `${coverage.rx_alt_m.toFixed(0)} m MSL` : `${coverage.rx_alt_m.toFixed(0)} m AGL`}
               {" · "}
               {(coverage.covered_fraction * 100).toFixed(0)}% of area
+            </div>
+          </div>
+        )}
+        {relay && (
+          <div className="coverage-legend relay-legend">
+            <div className="relay-ramp" />
+            <div className="coverage-ticks">
+              <span>failed</span>
+              <span>marginal</span>
+              <span>+20 dB</span>
+            </div>
+            <div className="dim small">
+              Relay sites for {relay.link_id} at {relay.relay_alt_m.toFixed(0)} m {relay.relay_alt_ref.toUpperCase()} · best{" "}
+              {relay.best_margin_db?.toFixed(0) ?? "—"} dB vs direct {relay.direct_margin_db.toFixed(0)} dB
             </div>
           </div>
         )}

@@ -10,16 +10,21 @@ import numpy as np
 
 from .detector import detect, fuse_descriptors
 from .library import DEFAULT_LIBRARY
+from .links import LinkBudget
 from .models import (
     Alert,
     AlertKind,
+    BlueNetwork,
     CoverageGrid,
     CoverageRequest,
     EmitterTrack,
     EngineState,
     GridBounds,
+    LinkState,
+    LinkStatus,
     Position,
     ReceiverConfig,
+    RelayGrid,
     ScenarioInfo,
     SignalLibraryEntry,
     SpectrumFrame,
@@ -59,12 +64,16 @@ class Engine:
         )
         self.propagation = PropagationModel(self.terrain)
         self.tracker = Tracker(self.library, propagation=self.propagation)
+        self.link_budget = LinkBudget(self.propagation)
+        self.links: list[LinkStatus] = []
+        self._link_states: dict[str, LinkState] = {}
         self.alerts: deque[Alert] = deque(maxlen=200)
         self._alert_seq = 0
         self._seed = seed
         self.time = start_time if start_time is not None else time.time()
         self.scenario_name = scenario
         self.env = RfEnvironment(self.scenarios[scenario], seed=seed, terrain=self.terrain)
+        self.blue: BlueNetwork = self.env.scenario.blue_network.model_copy(deep=True)
         self.spectrum: SpectrumFrame = SpectrumFrame(
             time=self.time,
             start_hz=self.receiver.start_hz,
@@ -90,6 +99,9 @@ class Engine:
         self.scenarios = build_scenarios()
         self.scenario_name = name
         self.env = RfEnvironment(self.scenarios[name], seed=self._seed, terrain=self.terrain)
+        self.blue = self.env.scenario.blue_network.model_copy(deep=True)
+        self.links = []
+        self._link_states = {}
         self.tracker.reset()
         self._push_alert(
             ThreatLevel.NONE,
@@ -110,16 +122,95 @@ class Engine:
         )
         return self.receiver
 
+    def set_blue(self, network: BlueNetwork) -> BlueNetwork:
+        self.blue = network
+        self._link_states = {}
+        self._push_alert(
+            ThreatLevel.NONE,
+            AlertKind.SYSTEM,
+            None,
+            f"Blue network updated: {len(network.nodes)} nodes, {len(network.links)} links",
+        )
+        return self.blue
+
+    def relay_grid(
+        self,
+        link_id: str,
+        *,
+        relay_alt_m: float = 300.0,
+        relay_alt_ref: str = "agl",
+        radius_km: float | None = None,
+        n: int = 60,
+    ) -> RelayGrid:
+        link = self.blue.link(link_id)
+        if link is None:
+            raise KeyError(link_id)
+        return self.link_budget.relay_grid(
+            self.blue,
+            link,
+            self.env.ownship(),
+            self.tracker.tracks,
+            relay_alt_m=relay_alt_m,
+            relay_alt_ref=relay_alt_ref,
+            radius_km=radius_km,
+            n=n,
+        )
+
     # --------------------------------------------------------------- tick
     def tick(self, dt: float) -> list[Alert]:
         self.time += dt
         self.env.step(dt)
+        ownship = self.env.ownship()
         frame, descriptors = self.env.acquire(self.receiver, self.time)
         self.spectrum = frame
         dets = detect(frame, self.receiver.detection_threshold_db)
         dets = fuse_descriptors(dets, descriptors, frame.bin_width_hz)
-        events = self.tracker.update(dets, self.env.ownship(), self.time, frame.bin_width_hz)
-        return [a for a in (self._alert_for(ev) for ev in events) if a is not None]
+        events = self.tracker.update(dets, ownship, self.time, frame.bin_width_hz)
+        alerts = [a for a in (self._alert_for(ev) for ev in events) if a is not None]
+        self.links = self.link_budget.evaluate(self.blue, ownship, self.tracker.tracks)
+        alerts.extend(self._link_alerts())
+        return alerts
+
+    def _link_alerts(self) -> list[Alert]:
+        out: list[Alert] = []
+        for ls in self.links:
+            prev = self._link_states.get(ls.link_id)
+            self._link_states[ls.link_id] = ls.state
+            if prev is None or prev == ls.state:
+                continue
+            if ls.state == LinkState.FAILED:
+                cause = (
+                    "jammed by " + ", ".join(i.track_id for i in ls.interferers)
+                    if ls.interferers and ls.jam_dbm is not None and ls.jam_dbm > ls.noise_dbm
+                    else "insufficient signal"
+                )
+                out.append(
+                    self._push_alert(
+                        ThreatLevel.HIGH,
+                        AlertKind.LINK,
+                        ls.interferers[0].track_id if ls.interferers else None,
+                        f"LINK FAILED: {ls.name} ({cause}, margin {ls.margin_db:+.0f} dB)",
+                    )
+                )
+            elif ls.state == LinkState.MARGINAL:
+                out.append(
+                    self._push_alert(
+                        ThreatLevel.MEDIUM,
+                        AlertKind.LINK,
+                        ls.interferers[0].track_id if ls.interferers else None,
+                        f"Link marginal: {ls.name} (margin {ls.margin_db:+.0f} dB)",
+                    )
+                )
+            elif prev != LinkState.OK:
+                out.append(
+                    self._push_alert(
+                        ThreatLevel.NONE,
+                        AlertKind.LINK,
+                        None,
+                        f"Link restored: {ls.name} (margin {ls.margin_db:+.0f} dB)",
+                    )
+                )
+        return out
 
     # ------------------------------------------------------- terrain / coverage
     def terrain_info(self) -> TerrainInfo:
@@ -229,6 +320,8 @@ class Engine:
             spectrum=self.spectrum,
             tracks=self.tracker.tracks,
             alerts=list(self.alerts),
+            blue=self.blue,
+            links=self.links,
         )
 
     # ------------------------------------------------------------- alerts

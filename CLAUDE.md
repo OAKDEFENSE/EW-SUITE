@@ -19,6 +19,9 @@ pipeline (simulated receiver → detector → tracker/geolocation/classifier →
 - Propagation lives in `propagation.py` on top of a `Terrain` from `terrain.py`; both are
   vectorised over numpy arrays so coverage grids are computed in one call. Emitter `alt_m`
   in scenarios is height above ground; ownship altitude is MSL.
+- Blue-force link budgets live in `links.py`; interference comes only from geolocated
+  tracks with an EIRP estimate (never from simulation truth), so the console reflects what
+  the ESM picture actually knows.
 - Signal library entries are notional and unclassified. Do not add real system parameters.
 - Pure logic (geo, detector, tracker, classifier, store reducer, formatters) gets unit tests.
   UI components are exercised via typecheck and build only.

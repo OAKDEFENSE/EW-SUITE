@@ -11,6 +11,7 @@ const KIND_LABEL: Record<Alert["kind"], string> = {
   threat: "THREAT",
   track_lost: "LOST",
   geo_fix: "FIX",
+  link: "LINK",
   system: "SYS",
 };
 

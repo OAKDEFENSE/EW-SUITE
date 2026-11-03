@@ -23,8 +23,14 @@ def score_entry(det: Detection, entry: SignalLibraryEntry) -> float:
     """Return a 0..1 match score for one library entry."""
     if not (entry.freq_min_hz <= det.freq_hz <= entry.freq_max_hz):
         return 0.0
+    if entry.bw_min_hz is not None and det.bandwidth_hz < entry.bw_min_hz:
+        return 0.0
+    if entry.bw_max_hz is not None and det.bandwidth_hz > entry.bw_max_hz:
+        return 0.0
 
     score = 0.45
+    if entry.bw_min_hz is not None or entry.bw_max_hz is not None:
+        score += 0.1  # a bandwidth constraint that is met is extra evidence
     if entry.pulsed and det.pulse is not None:
         if _in_range(det.pulse.pri_us, entry.pri_min_us, entry.pri_max_us, 0.1):
             score += 0.3
