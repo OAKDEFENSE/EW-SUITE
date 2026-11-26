@@ -25,7 +25,7 @@ def test_state_shape(client):
 
 
 def test_library_and_scenarios(client):
-    assert len(client.get("/api/library").json()) >= 5
+    assert len(client.get("/api/library").json()) >= 17
     names = {s["name"] for s in client.get("/api/scenarios").json()}
     assert {"littoral_patrol", "quiet_range"} <= names
 

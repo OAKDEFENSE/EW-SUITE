@@ -32,6 +32,31 @@ def test_cw_uas_link():
     assert c.library_id == "UAS-C2-24"
 
 
+def _cw(freq, bw):
+    return Detection(freq_hz=freq, bandwidth_hz=bw, power_dbm=-60)
+
+
+def test_uas_signatures_by_band_and_width():
+    # Narrow vs wide in the shared ISM bands; the boundary sits between one and two bins
+    # of the full-span receiver (8.8 MHz) so both resolve at any tuning.
+    assert classify(_cw(2.44e9, 8.8e6), DEFAULT_LIBRARY).library_id == "UAS-C2-24"
+    assert classify(_cw(2.44e9, 17.6e6), DEFAULT_LIBRARY).library_id == "UAS-DL-24"
+    assert classify(_cw(5.80e9, 8.8e6), DEFAULT_LIBRARY).library_id == "UAS-C2-58"
+    assert classify(_cw(5.80e9, 17.6e6), DEFAULT_LIBRARY).library_id == "UAS-VID-58"
+    # Long-range control bands.
+    assert classify(_cw(433.9e6, 0.2e6), DEFAULT_LIBRARY).library_id == "UAS-C2-433"
+    assert classify(_cw(868e6, 1e6), DEFAULT_LIBRARY).library_id == "UAS-C2-900"
+    assert classify(_cw(915e6, 8.8e6), DEFAULT_LIBRARY).library_id == "UAS-C2-900"
+    # C band: protected C2 allocation vs tactical data link.
+    assert classify(_cw(5.06e9, 2e6), DEFAULT_LIBRARY).library_id == "UAS-C2-C"
+    assert classify(_cw(4.7e9, 17.6e6), DEFAULT_LIBRARY).library_id == "UAS-DL-C"
+    # Anything 30 MHz or wider and continuous is the jammer, in every band.
+    for f in (0.9e9, 2.44e9, 4.7e9, 5.8e9):
+        assert classify(_cw(f, 44e6), DEFAULT_LIBRARY).emitter_class == EmitterClass.JAMMER
+    # A narrow 4.7 GHz carrier matches nothing we know.
+    assert classify(_cw(4.7e9, 1e6), DEFAULT_LIBRARY).library_id is None
+
+
 def test_unknown_outside_library_bands():
     c = classify(_det(7.0e9), DEFAULT_LIBRARY)
     assert c.library_id is None
@@ -50,7 +75,7 @@ def test_wideband_cw_is_a_jammer_and_narrow_cw_is_not():
     narrow = Detection(freq_hz=2.44e9, bandwidth_hz=17e6, power_dbm=-60)
     assert classify(wide, DEFAULT_LIBRARY).emitter_class == EmitterClass.JAMMER
     assert classify(wide, DEFAULT_LIBRARY).threat == ThreatLevel.HIGH
-    assert classify(narrow, DEFAULT_LIBRARY).library_id == "UAS-C2-24"
+    assert classify(narrow, DEFAULT_LIBRARY).library_id == "UAS-DL-24"
     # A wideband CW signal in the UAS band is the jammer, not the control link.
     wide_24 = Detection(freq_hz=2.44e9, bandwidth_hz=60e6, power_dbm=-55)
     assert classify(wide_24, DEFAULT_LIBRARY).emitter_class == EmitterClass.JAMMER
